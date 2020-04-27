@@ -86,6 +86,9 @@ void led_blink(gpio_num_t anode,float interval,int repetitions)
 //Entry Point
 void app_main(void)
 {
+
+/*
+
   for (int i = 1 ; i <= 10 ; i++)
     {
         printf("Hello world! .... Nr. %d of 10 \n" , i );
@@ -182,8 +185,26 @@ void app_main(void)
     //Charger Disconnected , break the loop
   }
 
-  printf("\n\n---------- Charger Disconnected --------------------------\n\n");
 
+  */
+
+  printf("\n\n---------- Charger Disconnected ------------------------\n\n\n\n");
+
+  for(int i=5 ; i>0 ; i--)
+  {
+    i > 1 ? printf("\r-------- GOING TO SLEEP IN %d SECONDS -------------" , i)
+          : printf("\r-------- GOING TO SLEEP IN %d SECOND  -------------" , i);
+
+    fflush(stdout);
+
+    vTaskDelay(100);
+  }
+
+  printf("\r-------- SLEEPING -------------");
+
+  printf("\r-------- SLEEPING -------------");
+
+  
   //Not charging anymore
 
   //printf("STAT1: %d , STAT2: %d  \n", gpio_get_level(stat1), gpio_get_level(stat2) );
