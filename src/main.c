@@ -7,8 +7,15 @@
 #include "driver/gpio.h"
 #include "esp_timer.h"
 #include "driver/adc.h"
+#include "esp_sleep.h"
+
+
 
 //For the Rev 1 & 2 of Livy Protect the GPIO values are RED= 22, GREEN =21 & BLUE=23.
+
+//27mA normal working current w/o WIFI active
+//0.1mA on deep_sleep
+
 
 
 //Later all these should be move to the config file
@@ -38,7 +45,17 @@
 //#define pir_int	GPIO_NUM_2
 //#define beeper_freq	2700
 
-int point_delay = 1000000;
+
+
+#define uS_TO_S_FACTOR 1000000  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  10        /* Time ESP32 will go to sleep (in seconds) */
+
+#define button_bitmask 0x4000 // 2^14 in HEX
+
+
+int point_delay = 1*uS_TO_S_FACTOR;
+
+RTC_DATA_ATTR int bootCount = 0; //Saving into the RTC MEM the of wake up number
 
 void led_blink(gpio_num_t anode,float interval,int repetitions)
 {
@@ -83,11 +100,68 @@ void led_blink(gpio_num_t anode,float interval,int repetitions)
 
 }
 
+void print_wakeup_reason()
+{
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch(wakeup_reason)
+  {
+    case ESP_SLEEP_WAKEUP_EXT0 : printf("\n\nWakeup caused by external signal using RTC_IO"); break;
+    case ESP_SLEEP_WAKEUP_EXT1 : printf("\n\nWakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : printf("\n\nWake-Up caused by timer"); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : printf("\n\nWakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : printf("\n\nWakeup caused by ULP program"); break;
+    default : printf("\n\nWakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+  }
+}
+
+
+
 //Entry Point
 void app_main(void)
 {
 
-/*
+  ++bootCount;  //increment every time we wake up , is RTC so sleep resistant
+
+  printf("\n\nI am UP !  , Boot number: %d ",bootCount);
+
+  if (bootCount > 1) print_wakeup_reason();
+
+  /*
+ First we configure the wake up source
+ We set our ESP32 to wake up for an external trigger.
+ There are two types for ESP32, ext0 and ext1 .
+ ext0 uses RTC_IO to wakeup thus requires RTC peripherals
+ to be on while ext1 uses RTC Controller so doesnt need
+ peripherals to be powered on.
+ Note that using internal pullups/pulldowns also requires
+ RTC peripherals to be turned on.
+
+ We will be using the GPIO 14(is the button on livy_v1)
+ The GPIO_14 is the RTC_GPIO16
+
+ Two kinds of wake ups will be implemented , every 10 secs by the timer
+ and every time the user push the button(GPIO_14 to gnd) more than 1 sec
+
+  */
+
+  //Configuring int. timer (most likely not using it due to v_reg inneficiency)
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+
+  //Only RTC IO can be used as a source for external wake
+  //source. They are pins: 0,2,4,12-15,25-27,32-39
+  //The button is on pin 14 on Livy Leak
+
+  //Button normally on Ground , pressed on HIGH
+  //esp_sleep_enable_ext1_wakeup(button_bitmask, ESP_EXT1_WAKEUP_ANY_HIGH) ;
+
+  printf("\n\nWill go to sleep for %d Seconds\n", TIME_TO_SLEEP);
+  printf("or until you push the button,\n");
+  printf("whatever occurs first\n\n");
+
+/* DELETE HERE FOR FULL DEMO
 
   for (int i = 1 ; i <= 10 ; i++)
     {
@@ -186,25 +260,16 @@ void app_main(void)
   }
 
 
-  */
+
 
   printf("\n\n---------- Charger Disconnected ------------------------\n\n\n\n");
 
-  for(int i=5 ; i>0 ; i--)
-  {
-    i > 1 ? printf("\r-------- GOING TO SLEEP IN %d SECONDS -------------" , i)
-          : printf("\r-------- GOING TO SLEEP IN %d SECOND  -------------" , i);
 
-    fflush(stdout);
 
-    vTaskDelay(100);
-  }
+  DELETE HERE FOR FULL DEMO  */
 
-  printf("\r-------- SLEEPING -------------");
 
-  printf("\r-------- SLEEPING -------------");
 
-  
   //Not charging anymore
 
   //printf("STAT1: %d , STAT2: %d  \n", gpio_get_level(stat1), gpio_get_level(stat2) );
@@ -219,5 +284,43 @@ void app_main(void)
   //Display the Bluetooths we know
 
 
+
+  gpio_set_direction(button, GPIO_MODE_INPUT);
+  gpio_pulldown_en(button);
+  vTaskDelay(100);
+
+  if (gpio_get_level(button))
+  {
+    printf("\n\n");
+
+    while(1)
+    {
+      if (!gpio_get_level(button)) break;
+      printf("\r----- BUTTON IS STILL PRESSED , RELEASE TO SLEEP -----------");
+      fflush(stdout);
+      vTaskDelay(20);
+    }
+  }
+
+
+  for(int i=9 ; i>0 ; i--)
+  {
+    i > 1 ? printf("\r-------- GOING TO SLEEP IN %d SECONDS -------------" , i)
+          : printf("\r-------- GOING TO SLEEP IN %d SECOND  -------------" , i);
+
+    fflush(stdout);
+    vTaskDelay(100);
+  }
+
+  printf("\r-------- SLEEPING -------------------------------");
+  fflush(stdout);
+
+  //Redefining the button to act as trigger for wake up
+  esp_sleep_enable_ext1_wakeup(button_bitmask, ESP_EXT1_WAKEUP_ANY_HIGH) ;
+
+  //Here the program sleeps if the butt is not pressed,
+  //nothing beyond this point will be exec.
+
+  esp_deep_sleep_start();
 
 }
