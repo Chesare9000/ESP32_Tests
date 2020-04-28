@@ -1,0 +1,395 @@
+/*
+ * cHttpClient.cpp
+ *
+ *  Created on: 12 сент. 2017 г.
+ *      Author: Pavlenko
+ */
+
+#include "sdkconfig.h"
+#include <sstream>
+#include <string.h>
+
+#include <iomanip>
+#include <stdlib.h>
+#include <posix/sys/socket.h>
+
+#include <lwip/inet.h>
+#include <lwip/ip4_addr.h>
+#include <lwip/dns.h>
+#include <lwip/netdb.h>
+
+#include <errno.h>
+#include <mbedtls/base64.h>
+
+#include "cHttpClient.h"
+#include "../../main/common/Utils.h"
+
+#include <esp_log.h>
+#include <esp_err.h>
+
+static const char* TAG = "cHttpClient";
+
+
+cHttpClient::cHttpClient(cWiFiDevice &dev):CurrentStatus(eHttpClientStatus::e_shutdown), socket_id(-1) {
+	pCallbacks = nullptr;
+	m_pwifi = &dev;
+	bAutoCalcSha1 = false;
+	bShaWasInit = false;
+	b_allow_data_processing = false;
+}
+
+cHttpClient::~cHttpClient() {
+	Shutdown();
+}
+
+
+void cHttpClient::StartTask(){
+	if(!IsTaskExists()){
+		// start task
+		TaskCreate("HTTP Client", 5, 4096);
+	}
+}
+
+bool cHttpClient::IsFailed(){
+	StartTask();
+	return CurrentStatus == eHttpClientStatus::e_http_failed || CurrentStatus == eHttpClientStatus::e_wifi_failed;
+}
+
+bool cHttpClient::IsReadyToGet(){
+	StartTask();
+	return CurrentStatus == eHttpClientStatus::e_ok || CurrentStatus == eHttpClientStatus::e_http_failed;
+}
+
+void cHttpClient::TaskHandler(){
+	int rnrn(0); // to divide headers and body
+	bool bSleep;
+	while(true){
+		bSleep = true;
+
+		// WiFi state checkers
+		if(CurrentStatus == eHttpClientStatus::e_shutdown){
+			if(m_pwifi->CurrentState == eWiFiState::e_connected){
+				CurrentStatus = eHttpClientStatus::e_busy_wifi; // allow to process this state and advance
+			}
+		}
+
+		if(CurrentStatus == eHttpClientStatus::e_busy_wifi){
+			// check WiFi
+			switch(m_pwifi->CurrentState){
+			case eWiFiState::e_connected:
+				CurrentStatus = eHttpClientStatus::e_ok;
+				break;
+			case eWiFiState::e_disconnected:
+			case eWiFiState::e_failed:
+				CurrentStatus = eHttpClientStatus::e_wifi_failed;
+				if(pCallbacks)
+					pCallbacks->OnError(this);
+				break;
+			default:
+				break;
+			}
+		}else if(CurrentStatus == eHttpClientStatus::e_busy_http){
+			// check wifi state
+			if(m_pwifi->CurrentState == eWiFiState::e_disconnected || m_pwifi->CurrentState == eWiFiState::e_failed){
+				CurrentStatus = eHttpClientStatus::e_wifi_failed;
+				ESP_LOGE(TAG, "WiFi unexpectedly fails!");
+				if(pCallbacks)
+					pCallbacks->OnError(this);
+				continue;
+			}
+
+			while(!b_allow_data_processing){
+				vTaskDelay(1);
+				continue;
+			}
+
+			// initialize sha if required
+			if(bAutoCalcSha1 && !bShaWasInit){
+				//ESP_LOGI(TAG, "SHA1 self-test, %d", mbedtls_sha1_self_test(1));
+				//memset(&sha, 0, sizeof sha);
+				mbedtls_sha1_init(&sha);
+				mbedtls_sha1_starts(&sha);
+				bShaWasInit = true;
+			}
+			// process HTTP response
+			uint8_t buf[256];
+			int buff_len = recv(socket_id, buf, sizeof buf, MSG_DONTWAIT);
+			if (buff_len < 0) { /*receive error*/
+				if(GetTickCount() - recv_start_t > 15000){
+					// timeout
+					ESP_LOGE(TAG, "Error: Timeout happens while receiving data!");
+					CurrentStatus = eHttpClientStatus::e_http_failed;
+					if(pCallbacks){
+						if(body_data.size()){
+							// finalize sha
+							sha_finish();
+							pCallbacks->OnResponseComplete(this);
+						}
+						pCallbacks->OnError(this);
+					}
+					continue;
+				}
+				if(errno == EAGAIN){
+					//ESP_LOGD(TAG, "not Error: EAGAIN errno=%d", errno);
+					vTaskDelay(0); // give the time to other tasks
+					continue;
+				}
+				ESP_LOGE(TAG, "Error: receive data error! errno=%d", errno);
+				CurrentStatus = eHttpClientStatus::e_http_failed;
+				if(pCallbacks)
+					pCallbacks->OnError(this);
+
+			} else if (buff_len > 0) {
+				bSleep = false;
+				if(b_resp_body_start){ // headers are already received
+					int cursz = body_data.size();
+					body_data.resize(cursz + buff_len);
+					memcpy(&body_data[cursz], buf, buff_len);
+					// add this data to sha
+					if(bShaWasInit){
+						mbedtls_sha1_update(&sha, buf, buff_len);
+					}
+					if(pCallbacks){// process user callback
+						//ESP_LOGI(TAG, "New DATA! Size=%d", buff_len);
+						pCallbacks->OnNewData(this);
+					}
+				}else{ // check for headers
+					for(int ic = 0; ic < buff_len; ic++){
+						uint8_t c = buf[ic];
+						if(b_resp_body_start){
+							// put this bytes to the body_data
+							int cursz = body_data.size();
+							if(cursz > 10000){
+								ESP_LOGE(TAG, "Body data overflow - dropping! Use callbacks, please!");
+								cursz = 0;
+							}
+							body_data.resize(cursz + buff_len - ic);
+							memcpy(&body_data[cursz], buf + ic, buff_len - ic);
+							// add this data to sha
+							if(bShaWasInit){
+								mbedtls_sha1_update(&sha, buf + ic, buff_len - ic);
+							}
+							if(pCallbacks){	// process callback
+								pCallbacks->OnNewData(this);
+							}
+							break;
+						}else{ // append to headers data
+							char tc[]={c,0};
+							if(c == '\r' || c == '\n'){ // search for \r\n\r\n
+								rnrn ++;
+								if(rnrn == 4){
+									b_resp_body_start = true;
+									rnrn = 0;
+									if(pCallbacks)
+										pCallbacks->OnHeaders(this);
+								}
+							}else {
+								// reset
+								rnrn = 0;
+							}
+							headers_data += tc;
+						}
+					}
+				}
+				// update our watchdog
+				recv_start_t = GetTickCount();
+			} else if (buff_len == 0) {  /*packet is over*/
+				CurrentStatus = eHttpClientStatus::e_ok;
+				close(socket_id);
+				socket_id = -1;
+				// finish sha processing
+				sha_finish();
+				if(pCallbacks)
+					pCallbacks->OnResponseComplete(this);
+
+				ESP_LOGD(TAG, "Connection closed, all packets was received");
+			}
+		}
+		if(bSleep) vTaskDelay(10);
+	}
+}
+
+bool cHttpClient::HttpRequest(const std::string &req_body, const std::string &server_host, const std::string &server_port, bool bCheckOnly){
+	ESP_LOGD(TAG, ">> HttpRequest");
+	if(!server_host.length() || !server_port.length()){
+		ESP_LOGE(TAG, "<< HttpRequest, wrong host and|or port!");
+		return false;
+	}
+
+	// cleanup
+	headers_data.clear();
+	body_data.clear();
+	// maybe we already have wifi connection?
+	CurrentStatus = eHttpClientStatus::e_busy_wifi;
+	b_allow_data_processing = !pCallbacks; // deny implicit data processing when callbacks are in use
+
+	StartTask();
+
+	cTimeout to(10000);
+	while(/*!m_pwifi->IsConnectionFinished() ||*/ CurrentStatus == eHttpClientStatus::e_busy_wifi && !to()){ // wait for WiFi status
+		vTaskDelay(10);
+	}
+
+	// check our state
+	bool bCanTry = CurrentStatus == eHttpClientStatus::e_ok || CurrentStatus == eHttpClientStatus::e_http_failed;
+	if(!bCanTry){
+		ESP_LOGE(TAG, "My Status is not good enough to execute HTTP request");
+		if(pCallbacks)
+			pCallbacks->OnError(this);
+		return false;
+	}
+
+	CurrentStatus = eHttpClientStatus::e_ok;
+
+	ESP_LOGD(TAG, "HTTP Request: %s", req_body.c_str());
+
+	struct sockaddr_in sock_info;
+
+	if(socket_id != -1) close(socket_id);
+
+	socket_id = socket(AF_INET, SOCK_STREAM, 0);
+	if (socket_id == -1) {
+		ESP_LOGE(TAG, "<< HttpRequest Create socket failed!");
+		CurrentStatus = eHttpClientStatus::e_http_failed;
+		if(pCallbacks)
+			pCallbacks->OnError(this);
+		return false;
+	}
+
+	// set connect info
+	memset(&sock_info, 0, sizeof(struct sockaddr_in));
+	sock_info.sin_family = AF_INET;
+	sock_info.sin_addr.s_addr = inet_addr(HostNameToIP(server_host).c_str());
+	sock_info.sin_port = htons((uint16_t)atoi(server_port.c_str()));
+
+	// connect to http server
+	int http_connect_flag = connect(socket_id, (sockaddr *)&sock_info, sizeof(sock_info));
+	if (http_connect_flag == -1) {
+		close(socket_id);
+		socket_id = -1;
+		CurrentStatus = eHttpClientStatus::e_http_failed;
+		ESP_LOGE(TAG, "<< HttpRequest Connect to the server failed! errno=%d", errno);
+		if(pCallbacks)
+			pCallbacks->OnError(this);
+		return false;
+	} else {
+		ESP_LOGD(TAG, "Connected to the server OK");
+		//return true;
+	}
+
+	if(bCheckOnly){ // no need to make request, check only if server is available
+		close(socket_id);
+		socket_id = -1;
+		ESP_LOGD(TAG, "<< HttpRequest CheckOnly OK");
+		return true;
+	}
+
+	//Send the request
+	int res = send(socket_id, req_body.c_str(), req_body.size(), 0);
+	if (res == -1) {
+		CurrentStatus = eHttpClientStatus::e_http_failed;
+		ESP_LOGE(TAG, "<< HttpRequest Send request to the server failed");
+		if(pCallbacks)
+			pCallbacks->OnError(this);
+		return false;
+	} else {
+		ESP_LOGD(TAG, "Send request to the server succeeded");
+	}
+
+	recv_start_t = GetTickCount();
+	b_resp_body_start = false;
+	CurrentStatus = eHttpClientStatus::e_busy_http;
+	ESP_LOGD(TAG, "<< HttpRequest OK");
+	return true;
+}
+
+bool cHttpClient::HttpGet(const std::string& uri, bool bCheckOnly){
+	// parse URL to the parts
+	ESP_LOGD(TAG, "HttpGet URL %s", uri.c_str());
+	//http://server:port/file
+	std::string QueryString, Path, Protocol, Host, Port;
+	if(!ParseUrlToParts(uri, Host, Port, Path, QueryString, Protocol))
+		return false;
+
+	std::string req_body =
+			"GET " + Path + (QueryString.length() ? "?" + QueryString : "") +
+			" HTTP/1.1\r\nHost: " + Host +
+			"\r\nConnection: close\r\n\r\n";
+	return HttpRequest(req_body, Host, Port, bCheckOnly);
+}
+
+bool cHttpClient::HttpPost(const std::string& uri, const std::string &data, const std::string &more_headers){
+	/*
+	POST /foo.php?someVar=123&anotherVar=TRUE HTTP/1.1
+	Host: example.org
+	Content-Type: application/x-www-form-urlencoded
+	Content-Length: 7
+
+	foo=bar
+	 */
+	// parse URL to the parts
+	ESP_LOGD(TAG, "HttpPost URL: %s \n data: %s", uri.c_str(), data.c_str());
+	//http://server:port/file
+	std::string QueryString, Path, Protocol, Host, Port;
+	if(!ParseUrlToParts(uri, Host, Port, Path, QueryString, Protocol))
+		return false;
+
+	std::string req_body =
+			"POST " + Path + (QueryString.length() ? "?" + QueryString : "") + " HTTP/1.1\r\n"
+			"Host: " + Host + "\r\n"+
+			more_headers + (more_headers.length() ? "\r\n" : "") +
+			"Content-Length: " + IntToStr(data.length()) + "\r\n"
+			"Connection: close\r\n\r\n" + data;
+
+	return HttpRequest(req_body, Host, Port);
+}
+
+
+void cHttpClient::Shutdown(){
+	ESP_LOGD(TAG, ">> Shutdown");
+
+	if(bShaWasInit){
+		// deinitialize sha internals
+		mbedtls_sha1_free(&sha);
+		bShaWasInit = false;
+	}
+
+	if(CurrentStatus == eHttpClientStatus::e_shutdown){
+		ESP_LOGD(TAG, "<< Shutdown - already down!");
+		return;
+	}
+
+	TaskDelete();
+	if(socket_id != -1){
+		close(socket_id);
+		socket_id = -1;
+	}
+	headers_data.clear();
+	body_data.clear();
+	CurrentStatus = eHttpClientStatus::e_shutdown;
+	ESP_LOGD(TAG, "<< Shutdown");
+}
+
+
+void cHttpClient::sha_finish(){
+	if(bShaWasInit){
+		unsigned char output[20], base64_out[64];
+		mbedtls_sha1_finish(&sha, output);
+		// deinitialize sha internals
+		mbedtls_sha1_free(&sha);
+		bShaWasInit = false;
+		// convert sha1 to the hex string
+		std::stringstream ss;
+		ss << std::hex;
+		for(int i = 0; i < sizeof output; i++)
+			ss << std::setw(2) << std::setfill('0') << (int)output[i];
+		//ESP_LOGW(TAG, "HEX DATA for SHA1: %s", ss.str().c_str());
+		// now get the base64-encoded string
+		size_t out_len(0);
+		mbedtls_base64_encode(base64_out, sizeof base64_out,  &out_len,
+				(uint8_t*)ss.str().c_str(), ss.str().size());
+
+		base64_out[out_len] = 0; // null-terminate
+		DataSha1Hash = (char*) base64_out;
+	}
+}

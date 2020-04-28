@@ -8,6 +8,7 @@
 #include "esp_timer.h"
 #include "driver/adc.h"
 #include "esp_sleep.h"
+#include "driver/ledc.h"
 
 
 
@@ -24,8 +25,13 @@
 #define led_green_anode  GPIO_NUM_21
 #define led_blue_anode  GPIO_NUM_23
 
+
+//BUZZER
 #define buzzer GPIO_NUM_16
 
+
+
+//COMM
 #define scl_1 GPIO_NUM_18
 #define sda_1 GPIO_NUM_19
 
@@ -56,6 +62,8 @@
 int point_delay = 1*uS_TO_S_FACTOR;
 
 RTC_DATA_ATTR int bootCount = 0; //Saving into the RTC MEM the of wake up number
+
+
 
 void led_blink(gpio_num_t anode,float interval,int repetitions)
 {
@@ -130,7 +138,8 @@ void app_main(void)
 
   if (bootCount > 1) print_wakeup_reason();
 
-  /*
+
+    /*
  First we configure the wake up source
  We set our ESP32 to wake up for an external trigger.
  There are two types for ESP32, ext0 and ext1 .
@@ -298,11 +307,63 @@ void app_main(void)
     printf("\r----- BUTTON IS STILL PRESSED , RELEASE TO SLEEP -----------");
     fflush(stdout);
 
+    //PWM definitions for the alarm led (RED)
+
+
+  	int minValue      = 1023;  // micro seconds (uS)
+
+    //At this value we already have the full brightness so from here we sweep
+  	int maxValue      = 500; // micro seconds (uS)
+
+    //The LED in on at GND (duty=0) , therefore we start with the highest duty
+    int duty          = minValue ;
+
+  	ledc_timer_config_t timer_conf;
+    timer_conf.duty_resolution = LEDC_TIMER_10_BIT;
+  	timer_conf.freq_hz    = 300;
+  	timer_conf.speed_mode = LEDC_HIGH_SPEED_MODE;
+  	timer_conf.timer_num  = LEDC_TIMER_0;
+  	ledc_timer_config(&timer_conf);
+
+  	ledc_channel_config_t ledc_conf;
+  	ledc_conf.channel    = LEDC_CHANNEL_0;
+  	ledc_conf.duty       = duty;
+  	ledc_conf.gpio_num   = led_red_anode;
+  	ledc_conf.intr_type  = LEDC_INTR_DISABLE;
+  	ledc_conf.speed_mode = LEDC_HIGH_SPEED_MODE;
+  	ledc_conf.timer_sel  = LEDC_TIMER_0;
+  	ledc_channel_config(&ledc_conf);
+
+    //Looping until the button is released
+
+
     while(1)
     {
+      for(int i = minValue  ; i > maxValue  ; i-=50)
+      {
+        if (!gpio_get_level(button)) break;
+        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, i );
+        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
+        vTaskDelay(10);
+      }
       if (!gpio_get_level(button)) break;
-      vTaskDelay(30);
+
+      for(int i = maxValue  ; i < minValue  ; i+=50)
+      {
+        if (!gpio_get_level(button)) break;
+        ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, i );
+        ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
+        vTaskDelay(10);
+      }
+      if (!gpio_get_level(button)) break;
+
     }
+
+    //TURNING COMPLETELY OFF THE ALARM
+    gpio_pad_select_gpio(led_red_anode);
+    gpio_set_direction(led_red_anode, GPIO_MODE_OUTPUT);
+    gpio_set_level(led_red_anode, 1);
+
   }
 
   for(int i=9 ; i>0 ; i--)
@@ -313,6 +374,7 @@ void app_main(void)
     fflush(stdout);
     vTaskDelay(100);
   }
+
 
   printf("\r----------------- SLEEPING ----------------------");
   fflush(stdout);
