@@ -108,8 +108,9 @@ void print_wakeup_reason()
 
   switch(wakeup_reason)
   {
-    case ESP_SLEEP_WAKEUP_EXT0 : printf("\n\nWakeup caused by external signal using RTC_IO"); break;
-    case ESP_SLEEP_WAKEUP_EXT1 : printf("\n\nWakeup caused by external signal using RTC_CNTL"); break;
+    case ESP_SLEEP_WAKEUP_EXT0 : printf("\n\nWakeup caused by external signal using RTC_IO (EXT_0)"); break;
+    //Our Button in ons EXT_0 config on the bitmask for the GPIO_14
+    case ESP_SLEEP_WAKEUP_EXT1 : printf("\n\nWakeup caused by external signal using RTC_CNTL (EXT_1)"); break;
     case ESP_SLEEP_WAKEUP_TIMER : printf("\n\nWake-Up caused by timer"); break;
     case ESP_SLEEP_WAKEUP_TOUCHPAD : printf("\n\nWakeup caused by touchpad"); break;
     case ESP_SLEEP_WAKEUP_ULP : printf("\n\nWakeup caused by ULP program"); break;
@@ -284,24 +285,25 @@ void app_main(void)
   //Display the Bluetooths we know
 
 
-
+  //Important to remap it as otherwise will still be config for the sleep trigger
   gpio_set_direction(button, GPIO_MODE_INPUT);
   gpio_pulldown_en(button);
-  vTaskDelay(100);
+  vTaskDelay(10);
+
 
   if (gpio_get_level(button))
   {
     printf("\n\n");
 
+    printf("\r----- BUTTON IS STILL PRESSED , RELEASE TO SLEEP -----------");
+    fflush(stdout);
+
     while(1)
     {
       if (!gpio_get_level(button)) break;
-      printf("\r----- BUTTON IS STILL PRESSED , RELEASE TO SLEEP -----------");
-      fflush(stdout);
-      vTaskDelay(20);
+      vTaskDelay(30);
     }
   }
-
 
   for(int i=9 ; i>0 ; i--)
   {
@@ -312,7 +314,7 @@ void app_main(void)
     vTaskDelay(100);
   }
 
-  printf("\r-------- SLEEPING -------------------------------");
+  printf("\r----------------- SLEEPING ----------------------");
   fflush(stdout);
 
   //Redefining the button to act as trigger for wake up
