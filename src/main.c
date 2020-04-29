@@ -64,7 +64,6 @@ int point_delay = 1*uS_TO_S_FACTOR;
 RTC_DATA_ATTR int bootCount = 0; //Saving into the RTC MEM the of wake up number
 
 
-
 void led_blink(gpio_num_t anode,float interval,int repetitions)
 {
 
@@ -72,7 +71,6 @@ void led_blink(gpio_num_t anode,float interval,int repetitions)
                          :( anode == led_green_anode ) ? "green"
                          :( anode == led_blue_anode  ) ? "blue"
                          :                               " "    ;
-
 
   gpio_pad_select_gpio(anode);
   gpio_set_direction(anode, GPIO_MODE_OUTPUT);
@@ -83,9 +81,6 @@ void led_blink(gpio_num_t anode,float interval,int repetitions)
 
   while(repetitions > count)
   {
-
-
-
     printf("\rTesting the %s led :  ON " , led_color );
     fflush(stdout);
 
@@ -93,7 +88,6 @@ void led_blink(gpio_num_t anode,float interval,int repetitions)
     gpio_set_level(anode, 0);
 
     vTaskDelay(interval / portTICK_PERIOD_MS);
-
 
     printf("\rTesting the %s led :  OFF " , led_color );
     fflush(stdout);
@@ -126,8 +120,6 @@ void print_wakeup_reason()
   }
 }
 
-
-
 //Entry Point
 void app_main(void)
 {
@@ -138,23 +130,21 @@ void app_main(void)
 
   if (bootCount > 1) print_wakeup_reason();
 
+  /*
+  First we configure the wake up source
+  We set our ESP32 to wake up for an external trigger.
+  There are two types for ESP32, ext0 and ext1 .
+  ext0 uses RTC_IO to wakeup thus requires RTC peripherals
+  to be on while ext1 uses RTC Controller so doesnt need
+  peripherals to be powered on.
+  Note that using internal pullups/pulldowns also requires
+  RTC peripherals to be turned on.
 
-    /*
- First we configure the wake up source
- We set our ESP32 to wake up for an external trigger.
- There are two types for ESP32, ext0 and ext1 .
- ext0 uses RTC_IO to wakeup thus requires RTC peripherals
- to be on while ext1 uses RTC Controller so doesnt need
- peripherals to be powered on.
- Note that using internal pullups/pulldowns also requires
- RTC peripherals to be turned on.
+  We will be using the GPIO 14(is the button on livy_v1)
+  The GPIO_14 is the RTC_GPIO16
 
- We will be using the GPIO 14(is the button on livy_v1)
- The GPIO_14 is the RTC_GPIO16
-
- Two kinds of wake ups will be implemented , every 10 secs by the timer
- and every time the user push the button(GPIO_14 to gnd) more than 1 sec
-
+  Two kinds of wake ups will be implemented , every 10 secs by the timer
+  and every time the user push the button(GPIO_14 to gnd) more than 1 sec
   */
 
   //Configuring int. timer (most likely not using it due to v_reg inneficiency)
@@ -171,7 +161,8 @@ void app_main(void)
   printf("or until you push the button,\n");
   printf("whatever occurs first\n\n");
 
-/* DELETE HERE FOR FULL DEMO
+  /*
+  DELETE HERE FOR FULL DEMO
 
   for (int i = 1 ; i <= 10 ; i++)
     {
@@ -270,8 +261,6 @@ void app_main(void)
   }
 
 
-
-
   printf("\n\n---------- Charger Disconnected ------------------------\n\n\n\n");
 
 
@@ -341,29 +330,29 @@ void app_main(void)
     {
       for(int i = minValue  ; i > maxValue  ; i-=50)
       {
-        if (!gpio_get_level(button)) break;
+        if (!gpio_get_level(button)) break; //Just break the for
         ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, i );
         ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
         vTaskDelay(10);
       }
-      if (!gpio_get_level(button)) break;
+
+      if (!gpio_get_level(button)) break; //Break the while
 
       for(int i = maxValue  ; i < minValue  ; i+=50)
       {
-        if (!gpio_get_level(button)) break;
+        if (!gpio_get_level(button)) break; //Just break the for
         ledc_set_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0, i );
         ledc_update_duty(LEDC_HIGH_SPEED_MODE, LEDC_CHANNEL_0);
         vTaskDelay(10);
       }
-      if (!gpio_get_level(button)) break;
 
+      if (!gpio_get_level(button)) break; //Break the while
     }
 
     //TURNING COMPLETELY OFF THE ALARM
     gpio_pad_select_gpio(led_red_anode);
     gpio_set_direction(led_red_anode, GPIO_MODE_OUTPUT);
     gpio_set_level(led_red_anode, 1);
-
   }
 
   for(int i=9 ; i>0 ; i--)
@@ -372,9 +361,8 @@ void app_main(void)
           : printf("\r-------- GOING TO SLEEP IN %d SECOND  -------------" , i);
 
     fflush(stdout);
-    vTaskDelay(100);
+    vTaskDelay(100); //1 second
   }
-
 
   printf("\r----------------- SLEEPING ----------------------");
   fflush(stdout);
