@@ -9,6 +9,11 @@
 #include "driver/adc.h"
 #include "esp_sleep.h"
 #include "driver/ledc.h"
+#include "freertos/event_groups.h"
+#include "esp_wifi.h"
+#include "esp_log.h"
+#include "esp_event.h"
+#include "nvs_flash.h"
 
 
 
@@ -57,6 +62,140 @@
 #define TIME_TO_SLEEP  10        /* Time ESP32 will go to sleep (in seconds) */
 
 #define button_bitmask 0x4000 // 2^14 in HEX
+
+///////////////////////////////////////////////////////////////////////////
+////////////////DEFINING EVERYTHING WE NEED FOR WIFI///////////////////////
+///////////////////////////////////////////////////////////////////////////
+
+/* Set the SSID and Password via project configuration, or can set directly here */
+#define DEFAULT_SSID CONFIG_EXAMPLE_WIFI_SSID
+#define DEFAULT_PWD CONFIG_EXAMPLE_WIFI_PASSWORD
+
+/*CONFIG_EXAMPLE_SCAN_METHOD*/
+#define DEFAULT_SCAN_METHOD WIFI_FAST_SCAN
+
+/*CONFIG_EXAMPLE_SORT_METHOD*/
+#define DEFAULT_SORT_METHOD WIFI_CONNECT_AP_BY_SIGNAL
+
+
+/*CONFIG_EXAMPLE_FAST_SCAN_THRESHOLD*/
+#define DEFAULT_RSSI -127
+#define DEFAULT_AUTHMODE WIFI_AUTH_OPEN
+
+
+///////////////////////////////////////////////////////////////////////////
+////////////////FUNCTIONS AND CONSTANTS WE NEED FOR WIFI///////////////////
+///////////////////////////////////////////////////////////////////////////
+
+
+static const char *TAG = "scan";
+
+static void event_handler(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+    }
+}
+
+
+/* Initialize Wi-Fi as sta and set scan method */
+static void fast_scan(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
+
+    // Initialize default station as network interface instance (esp-netif)
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+
+    // Initialize and start WiFi
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = DEFAULT_SSID,
+            .password = DEFAULT_PWD,
+            .scan_method = DEFAULT_SCAN_METHOD,
+            .sort_method = DEFAULT_SORT_METHOD,
+            .threshold.rssi = DEFAULT_RSSI,
+            .threshold.authmode = DEFAULT_AUTHMODE,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+}
+
+
+//main only has to call this function to connect to Wifi specified in DEFINITIONS
+
+static void scan_and_connect(void)
+{
+
+    printf("------------------------------------------------------------\n\n");
+    printf("Trying to connect to known wifi...\n\n");
+    printf("------------------------------------------------------------\n");
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK( ret );
+
+    fast_scan();
+
+    printf("------------------------------------------------------------\n\n");
+    printf("Connection was successful...\n");
+    printf("Sending out alarm and waiting for shut down...\n\n");
+    printf("------------------------------------------------------------\n");
+
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
+
+    //Read into sending an alarm to the livy app
+    //Consider to disconnect when no response
+
+}
+
+
+//function that handles communication
+static void communicate_wifi()
+{
+    esp_sleep_wakeup_cause_t wakeup_reason;
+
+    wakeup_reason = esp_sleep_get_wakeup_cause();
+
+
+    //Depending on the wake-up reason send an alarm or send battery voltage...
+    switch(wakeup_reason)
+    {
+    case ESP_SLEEP_WAKEUP_EXT0 : printf("\n\nWakeup caused by external signal using RTC_IO (EXT_0), sending alarm..."); break;
+    //Our Button in ons EXT_0 config on the bitmask for the GPIO_14
+    case ESP_SLEEP_WAKEUP_EXT1 : printf("\n\nWakeup caused by external signal using RTC_CNTL (EXT_1)"); break;
+    case ESP_SLEEP_WAKEUP_TIMER : printf("\n\nWake-Up caused by timer, sending battery voltage..."); break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD : printf("\n\nWakeup caused by touchpad"); break;
+    case ESP_SLEEP_WAKEUP_ULP : printf("\n\nWakeup caused by ULP program"); break;
+    default : printf("\n\nWakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
+    }   
+}
+
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
 
 
 int point_delay = 1*uS_TO_S_FACTOR;
@@ -279,6 +418,16 @@ void app_main(void)
 	//gpio_set_direction(PIN_STAT2, GPIO_MODE_INPUT);
 
   //Activate wifi , display , and connect to the ones we know
+
+  /////////////////////////////////////////////////////////////////////////////////////
+  //////////////////////Scanning and connecting the wifi///////////////////////////////
+  /////////////////////////////////////////////////////////////////////////////////////
+
+  scan_and_connect();
+
+  /////////////////////////////////////////////////////////////////////////////////////
+  /////////////////////////////////////////////////////////////////////////////////////
+  /////////////////////////////////////////////////////////////////////////////////////
 
   //Display the Bluetooths we know
 
