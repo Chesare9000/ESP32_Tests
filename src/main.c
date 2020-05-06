@@ -14,7 +14,11 @@
 #include "esp_log.h"
 #include "esp_event.h"
 #include "nvs_flash.h"
-
+#include <string.h>
+#include <stdlib.h>
+#include "esp_wpa2.h"
+#include "esp_netif.h"
+#include "esp_smartconfig.h"
 
 
 //For the Rev 1 & 2 of Livy Protect the GPIO values are RED= 22, GREEN =21 & BLUE=23.
@@ -68,8 +72,12 @@
 ///////////////////////////////////////////////////////////////////////////
 
 /* Set the SSID and Password via project configuration, or can set directly here */
-#define DEFAULT_SSID CONFIG_EXAMPLE_WIFI_SSID
-#define DEFAULT_PWD CONFIG_EXAMPLE_WIFI_PASSWORD
+
+
+//uint8_t DEFAULT_SSID[33] = { 0 };
+//uint8_t DEFAULT_PWD[65] = { 0 };
+//#define DEFAULT_SSID "SSID"
+//#define DEFAULT_PWD "PWD"
 
 /*CONFIG_EXAMPLE_SCAN_METHOD*/
 #define DEFAULT_SCAN_METHOD WIFI_FAST_SCAN
@@ -87,10 +95,11 @@
 ////////////////FUNCTIONS AND CONSTANTS WE NEED FOR WIFI///////////////////
 ///////////////////////////////////////////////////////////////////////////
 
+wifi_config_t wifi_config;
 
 static const char *TAG = "scan";
 
-static void event_handler(void* arg, esp_event_base_t event_base,
+static void event_handler_wifi(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -113,12 +122,14 @@ static void fast_scan(void)
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler_wifi, NULL, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler_wifi, NULL, NULL));
 
     // Initialize default station as network interface instance (esp-netif)
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     assert(sta_netif);
+
+    /* Initialize Wi-Fi as sta and set scan method
 
     // Initialize and start WiFi
     wifi_config_t wifi_config = {
@@ -131,6 +142,9 @@ static void fast_scan(void)
             .threshold.authmode = DEFAULT_AUTHMODE,
         },
     };
+
+     */
+
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -197,6 +211,106 @@ static void communicate_wifi()
 //////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////////////////////////////////////////////////////
 
+
+///////////////////////////////////////////////////////////////////////////
+////////////FUNCTIONS AND CONSTANTS WE NEED FOR SMART_CONFIG///////////////
+///////////////////////////////////////////////////////////////////////////
+
+/* FreeRTOS event group to signal when we are connected & ready to make a request */
+static EventGroupHandle_t s_wifi_event_group;
+
+/* The event group allows multiple bits for each event,
+   but we only care about one event - are we connected
+   to the AP with an IP? */
+static const int CONNECTED_BIT = BIT0;
+static const int ESPTOUCH_DONE_BIT = BIT1;
+static const char *TAG1 = "smartconfig_example";
+
+static void smartconfig_example_task(void * parm);
+
+static void event_handler_config(void* arg, esp_event_base_t event_base, 
+                                int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        xTaskCreate(smartconfig_example_task, "smartconfig_example_task", 4096, NULL, 3, NULL);
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        esp_wifi_connect();
+        xEventGroupClearBits(s_wifi_event_group, CONNECTED_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        xEventGroupSetBits(s_wifi_event_group, CONNECTED_BIT);
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SCAN_DONE) {
+        ESP_LOGI(TAG1, "Scan done");
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_FOUND_CHANNEL) {
+        ESP_LOGI(TAG1, "Found channel");
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_GOT_SSID_PSWD) {
+        ESP_LOGI(TAG1, "Got SSID and password");
+
+        smartconfig_event_got_ssid_pswd_t *evt = (smartconfig_event_got_ssid_pswd_t *)event_data;
+        uint8_t ssid[33] = { 0 };
+        uint8_t password[65] = { 0 };
+
+        bzero(&wifi_config, sizeof(wifi_config_t));
+        memcpy(wifi_config.sta.ssid, evt->ssid, sizeof(wifi_config.sta.ssid));
+        memcpy(wifi_config.sta.password, evt->password, sizeof(wifi_config.sta.password));
+        wifi_config.sta.bssid_set = evt->bssid_set;
+        if (wifi_config.sta.bssid_set == true) {
+            memcpy(wifi_config.sta.bssid, evt->bssid, sizeof(wifi_config.sta.bssid));
+        }
+
+        memcpy(ssid, evt->ssid, sizeof(evt->ssid));
+        memcpy(password, evt->password, sizeof(evt->password));
+        ESP_LOGI(TAG1, "SSID:%s", ssid);
+        ESP_LOGI(TAG1, "PASSWORD:%s", password);
+
+        ESP_ERROR_CHECK( esp_wifi_disconnect() );
+        ESP_ERROR_CHECK( esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
+        ESP_ERROR_CHECK( esp_wifi_connect() );
+    } else if (event_base == SC_EVENT && event_id == SC_EVENT_SEND_ACK_DONE) {
+        xEventGroupSetBits(s_wifi_event_group, ESPTOUCH_DONE_BIT);
+    }
+}
+
+static void initialise_wifi(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    s_wifi_event_group = xEventGroupCreate();
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    assert(sta_netif);
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
+
+    ESP_ERROR_CHECK( esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler_config, NULL) );
+    ESP_ERROR_CHECK( esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler_config, NULL) );
+    ESP_ERROR_CHECK( esp_event_handler_register(SC_EVENT, ESP_EVENT_ANY_ID, &event_handler_config, NULL) );
+
+    ESP_ERROR_CHECK( esp_wifi_set_mode(WIFI_MODE_STA) );
+    ESP_ERROR_CHECK( esp_wifi_start() );
+}
+
+static void smartconfig_example_task(void * parm)
+{
+    EventBits_t uxBits;
+    ESP_ERROR_CHECK( esp_smartconfig_set_type(SC_TYPE_ESPTOUCH) );
+    smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK( esp_smartconfig_start(&cfg) );
+    while (1) {
+        uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY); 
+        if(uxBits & CONNECTED_BIT) {
+            ESP_LOGI(TAG1, "WiFi Connected to ap");
+        }
+        if(uxBits & ESPTOUCH_DONE_BIT) {
+            ESP_LOGI(TAG1, "smartconfig over");
+            esp_smartconfig_stop();
+            vTaskDelete(NULL);
+        }
+    }
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////////////////
 
 int point_delay = 1*uS_TO_S_FACTOR;
 
@@ -265,6 +379,16 @@ void app_main(void)
 
   ++bootCount;  //increment every time we wake up , is RTC so sleep resistant
 
+
+  //////////////////////////SMART CONFIGURE//////////////////////////////////
+  if(bootCount <= 1)
+  {
+    ESP_ERROR_CHECK( nvs_flash_init() );
+    initialise_wifi();  
+    printf("\nWaiting for smart configure...\n");
+    vTaskDelay(20000 / portTICK_PERIOD_MS);
+  }
+  ///////////////////////////////////////////////////////////////////////////
   printf("\n\nI am UP !  , Boot number: %d ",bootCount);
 
   if (bootCount > 1) print_wakeup_reason();
@@ -423,7 +547,11 @@ void app_main(void)
   //////////////////////Scanning and connecting the wifi///////////////////////////////
   /////////////////////////////////////////////////////////////////////////////////////
 
-  scan_and_connect();
+  if(bootCount > 1)
+  {
+    scan_and_connect();  
+  }
+  
 
   /////////////////////////////////////////////////////////////////////////////////////
   /////////////////////////////////////////////////////////////////////////////////////
