@@ -200,11 +200,8 @@ static void communicate_wifi()
     case ESP_SLEEP_WAKEUP_TOUCHPAD : printf("\n\nWakeup caused by touchpad"); break;
     case ESP_SLEEP_WAKEUP_ULP : printf("\n\nWakeup caused by ULP program"); break;
     default : printf("\n\nWakeup was not caused by deep sleep: %d\n",wakeup_reason); break;
-    }   
+    }
 }
-
-
-
 
 
 //////////////////////////////////////////////////////////////////////////////////////////
@@ -228,7 +225,7 @@ static const char *TAG1 = "smartconfig_example";
 
 static void smartconfig_example_task(void * parm);
 
-static void event_handler_config(void* arg, esp_event_base_t event_base, 
+static void event_handler_config(void* arg, esp_event_base_t event_base,
                                 int32_t event_id, void* event_data)
 {
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
@@ -296,7 +293,7 @@ static void smartconfig_example_task(void * parm)
     smartconfig_start_config_t cfg = SMARTCONFIG_START_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_smartconfig_start(&cfg) );
     while (1) {
-        uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY); 
+        uxBits = xEventGroupWaitBits(s_wifi_event_group, CONNECTED_BIT | ESPTOUCH_DONE_BIT, true, false, portMAX_DELAY);
         if(uxBits & CONNECTED_BIT) {
             ESP_LOGI(TAG1, "WiFi Connected to ap");
         }
@@ -384,7 +381,7 @@ void app_main(void)
   if(bootCount <= 1)
   {
     ESP_ERROR_CHECK( nvs_flash_init() );
-    initialise_wifi();  
+    initialise_wifi();
     printf("\nWaiting for smart configure...\n");
     vTaskDelay(20000 / portTICK_PERIOD_MS);
   }
@@ -549,9 +546,9 @@ void app_main(void)
 
   if(bootCount > 1)
   {
-    scan_and_connect();  
+    scan_and_connect();
   }
-  
+
 
   /////////////////////////////////////////////////////////////////////////////////////
   /////////////////////////////////////////////////////////////////////////////////////

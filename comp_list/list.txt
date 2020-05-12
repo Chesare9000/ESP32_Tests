@@ -1,0 +1,15 @@
+Bauteil         Mouser-Nr.              Anzahl
+OR-Gate         595-SN74HC32N           3
+Inverter        757-TC74HC14AP(F,M) 	3
+Flip-Flop       595-CD4013BE        	3
+Poti            31VF605-F       	3
+RTC             700-DS1337      	3
+Quarz           729-G23270006       	3
+Vol- Regulator  579-MCP1825-3302E/AT    3
+PCB             910-SBBTH1520-1     	3
+3.5mm Jack      485-1699        	3
+3.5mm Plug      490-SP-3530         	3
+Push Button     506-FSM4JH      	3
+NMOS            512-2N7000      	3
+Touch 		485-1374		1
+Touch_2		713-101020037		1
